@@ -3,8 +3,6 @@
 #include "common.h"
 #include "naive.h"
 
-#define blockSize 256
-
 namespace StreamCompaction {
     namespace Naive {
         using StreamCompaction::Common::PerformanceTimer;
@@ -27,12 +25,16 @@ namespace StreamCompaction {
             }
         }
 
-        __global__ void shift_right(int n, int* odata, const int* idata) {
+        __global__ void make_exclusive(int n, int* odata, const int* idata) {
             int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-            if (index >= n - 1) {
+            if (index >= n) {
                 return;
             }
-            odata[index + 1] = idata[index];
+            if (index == 0) {
+                odata[index] = 0;
+                return;
+            }
+            odata[index] = idata[index - 1];
         }
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
@@ -68,8 +70,7 @@ namespace StreamCompaction {
                 std::swap(dev_bufA, dev_bufB);  // Output in dev_buf_A
             }
             // Inclusive Scan to Exclusive
-            dim3 fullBlocksPerGrid_nm1((n - 1 + blockSize - 1) / blockSize);
-            shift_right << <fullBlocksPerGrid_nm1, blockSize >> > (n, dev_bufB, dev_bufA);  // Shifted Output in dev_buf_B
+            make_exclusive<<<fullBlocksPerGrid, blockSize >> > (n, dev_bufB, dev_bufA);  // Exclusive scan in dev_buf_B
             checkCUDAErrorFn("Shift_right failed!");
             cudaDeviceSynchronize();
             timer().endGpuTimer();
@@ -80,7 +81,6 @@ namespace StreamCompaction {
             checkCUDAErrorFn("CudaFree dev_buf_A failed!");
             cudaFree(dev_bufB);
             checkCUDAErrorFn("CudaFree dev_buf_B failed!");
-            odata[0] = 0;
         }
     }
 }
