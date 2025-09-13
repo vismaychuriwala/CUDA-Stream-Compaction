@@ -1,6 +1,5 @@
 #include <cstdio>
 #include "cpu.h"
-
 #include "common.h"
 
 namespace StreamCompaction {
