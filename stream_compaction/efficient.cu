@@ -164,19 +164,21 @@ namespace StreamCompaction {
                 n = 1 << ilog2ceil(n);
             }
 
-            //dim3 fullBlocksPerGrid((n + blockSize - 1) / blockSize);
-            //int sharedMemBytes = 2 * blockSize * sizeof(int);
-            int* dev_buf_i = nullptr;
-            int* dev_buf_o = nullptr;
-            int* dev_buf_blockSums = nullptr;
-            int* dev_buf_blockIncr = nullptr;
 
-            // Number of blocks and threads for Multi Scan
+            int* dev_buf_i = nullptr;   //Input buffer
+            int* dev_buf_o = nullptr;   //Output buffer
+            int* dev_buf_blockSums = nullptr;   // Per-block Sums
+            int* dev_buf_blockIncr = nullptr;   // Per-block sums scan
+
+            // Multi Scan
+
+            // Number of blocks and threads
             int B = 2 * blockSize;
-            int numBlocks = (n + B - 1) / B;    // ceil(n/B)
+            int numBlocks = (n + B - 1) / B;    // ceil(n / B)
             dim3 fullBlocksPerGrid(numBlocks);
             int sharedMemBytes = (B + CONFLICT_FREE_OFFSET(B)) * sizeof(int);
 
+            // Allocate and copy Memory
             cudaMalloc((void**)&dev_buf_i, n * sizeof(int));
             checkCUDAErrorFn("cudaMalloc dev_buf_i in scan failed!");
 
@@ -186,11 +188,16 @@ namespace StreamCompaction {
             cudaMemcpy(dev_buf_i, idata, m * sizeof(int), cudaMemcpyHostToDevice);
             checkCUDAErrorFn("MemCpy dev_buf_i failed!");
 
+
+            // Inter-Block Accumulation
+
+            // Number of blocks and threads
             int num_blocks_next_power_2 = 1 << ilog2ceil(numBlocks);
             dim3 fullBlocksPerGrid_offsets((numBlocks + blockSize - 1) / blockSize);
             int sharedMem_offsets = (num_blocks_next_power_2 + CONFLICT_FREE_OFFSET(num_blocks_next_power_2)) * sizeof(int);
             int threads_offsets = num_blocks_next_power_2 / 2;
-            // If Multiple Blocks
+
+            // Allocate and copy Memory
                 cudaMalloc((void**)&dev_buf_blockSums, num_blocks_next_power_2 * sizeof(int));
                 checkCUDAErrorFn("cudaMalloc dev_buf_blockSums in scan failed!");
 
@@ -246,94 +253,137 @@ namespace StreamCompaction {
          * @returns      The number of elements remaining after compaction.
          */
         int compact(int n, int* odata, const int* idata) {
-            ////Check trivial cases:
-            //if (n <= 0) {
-            //    return 0;
-            //}
-            //if (n == 1) {
-            //    if (idata[0] != 0)
-            //    {
-            //        odata[0] = idata[0];
-            //        return 1;
-            //    }
-            //    return 0;
-            //}
-            //dim3 fullBlocksPerGrid((n + blockSize - 1) / blockSize);
-            //int m = n;
-            //n = 1 << ilog2ceil(n);
+            //Check trivial cases:
+            if (n <= 0) {
+                return 0;
+            }
+            if (n == 1) {
+                if (idata[0] != 0)
+                {
+                    odata[0] = idata[0];
+                    return 1;
+                }
+                return 0;
+            }
+            dim3 fullBlocksPerGrid((n + blockSize - 1) / blockSize);
+            int m = n;
+            n = 1 << ilog2ceil(n);
            
-            //    // Allocate and assign input
-            //    int* dev_buf_i = nullptr;
-            //    cudaMalloc((void**)&dev_buf_i, n * sizeof(int));
-            //    checkCUDAErrorFn("cudaMalloc dev_buf_i failed!");
-            //    cudaMemcpy(dev_buf_i, idata, m * sizeof(int), cudaMemcpyHostToDevice);
-            //    checkCUDAErrorFn("MemCpy dev_buf_i failed!");
+                // Allocate and assign input
+                int* dev_buf_i = nullptr;
+                cudaMalloc((void**)&dev_buf_i, n * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_i failed!");
+                cudaMemcpy(dev_buf_i, idata, m * sizeof(int), cudaMemcpyHostToDevice);
+                checkCUDAErrorFn("MemCpy dev_buf_i failed!");
 
-            //    // Allocate bools buffer
-            //    int* dev_buf_bools = nullptr;
-            //    cudaMalloc((void**)&dev_buf_bools, n * sizeof(int));
-            //    checkCUDAErrorFn("cudaMalloc dev_buf_bools failed!");
+                // Allocate bools buffer
+                int* dev_buf_bools = nullptr;
+                cudaMalloc((void**)&dev_buf_bools, n * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_bools failed!");
 
-            //    //Allocate output buffer
-            //    int* dev_buf_o = nullptr;
-            //    cudaMalloc((void**)&dev_buf_o, m * sizeof(int));
-            //    checkCUDAErrorFn("cudaMalloc dev_buf_o failed!");
+                //Allocate output buffer
+                int* dev_buf_o = nullptr;
+                cudaMalloc((void**)&dev_buf_o, m * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_o failed!");
 
-            //    //Allocate indices buffer
-            //    int* dev_buf_indices = nullptr;
-            //    cudaMalloc((void**)&dev_buf_indices, n * sizeof(int));
-            //    checkCUDAErrorFn("cudaMalloc dev_buf_indices failed!");
+                //Allocate indices buffer
+                int* dev_buf_indices = nullptr;
+                cudaMalloc((void**)&dev_buf_indices, n * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_indices failed!");
 
-            //    cudaMemset(dev_buf_bools + m, 0, (n - m) * sizeof(int));    // Padding zeroes to nearest power of two
-            //    checkCUDAErrorFn("CudaMemset zeroes failed!");
+                cudaMemset(dev_buf_bools + m, 0, (n - m) * sizeof(int));    // Padding zeroes to nearest power of two
+                checkCUDAErrorFn("CudaMemset zeroes failed!");
 
-            //    // Compute shared memory sizes
-            //    dim3 fullBlocksPerGrid_scan((n + blockSize - 1) / blockSize);
-            //    int sharedMemBytes = 2 * blockSize * sizeof(int);
+                // Compute shared memory sizes
+                //dim3 fullBlocksPerGrid_scan((n + blockSize - 1) / blockSize);
+                //int sharedMemBytes = 2 * blockSize * sizeof(int);
 
-            //    timer().startGpuTimer();
+                // Number of blocks and threads
+                int B = 2 * blockSize;
+                int numBlocks = (n + B - 1) / B;    // ceil(n / B)
+                dim3 fullBlocksPerGrid_scan(numBlocks);
+                int sharedMemBytes_scan = (B + CONFLICT_FREE_OFFSET(B)) * sizeof(int);
 
-            //    // Fill bools buffer
-            //    Common::kernMapToBoolean <<<fullBlocksPerGrid, blockSize >> > (m, dev_buf_bools, dev_buf_i);
-            //    cudaDeviceSynchronize();
+                // Inter-Block Accumulation
 
-            //    // Scan bools to output
-            //    Efficient::prescan<<<fullBlocksPerGrid_scan, blockSize, sharedMemBytes>>> (n, dev_buf_indices, dev_buf_bools);
-            //    checkCUDAErrorFn("prescan failed!");
-            //    cudaDeviceSynchronize();
+                int* dev_buf_blockSums = nullptr;   // Per-block Sums
+                int* dev_buf_blockIncr = nullptr;   // Per-block sums scan
 
-            //    // Compact now
-            //    Common::kernScatter << < fullBlocksPerGrid, blockSize>>> (m, dev_buf_o, dev_buf_i, dev_buf_bools, dev_buf_indices);
-            //    checkCUDAErrorFn("efficient scatter failed!");
-            //    cudaDeviceSynchronize();
+                // Number of blocks and threads
+                int num_blocks_next_power_2 = 1 << ilog2ceil(numBlocks);
+                dim3 fullBlocksPerGrid_offsets((numBlocks + blockSize - 1) / blockSize);
+                int sharedMem_offsets = (num_blocks_next_power_2 + CONFLICT_FREE_OFFSET(num_blocks_next_power_2)) * sizeof(int);
+                int threads_offsets = num_blocks_next_power_2 / 2;
 
-            //    timer().endGpuTimer();
+                // Allocate and copy Memory
+                cudaMalloc((void**)&dev_buf_blockSums, num_blocks_next_power_2 * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_blockSums in scan failed!");
 
-            //    // Compute size of compacted array
-            //    int last_index;
-            //    cudaMemcpy(&last_index, dev_buf_indices + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
+                if (num_blocks_next_power_2 > numBlocks) {
+                    cudaMemset(dev_buf_blockSums + numBlocks, 0,
+                        (num_blocks_next_power_2 - numBlocks) * sizeof(int));
+                }
+                cudaMalloc((void**)&dev_buf_blockIncr, num_blocks_next_power_2 * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_blockIncr in scan failed!");
 
-            //    int last_bool;
-            //    cudaMemcpy(&last_bool, dev_buf_bools + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
+                
+                timer().startGpuTimer();
+                //------------------------------------GPU--------------------------------------
+                // Fill bools buffer
+                Common::kernMapToBoolean <<<fullBlocksPerGrid, blockSize >> > (m, dev_buf_bools, dev_buf_i);
+                cudaDeviceSynchronize();
 
-            //    long long int count = (last_index + last_bool);
+                // Scan bools to output
+                Efficient::multi_scan << <fullBlocksPerGrid_scan, blockSize, sharedMemBytes_scan >> > (n, B, dev_buf_indices, dev_buf_bools, dev_buf_blockSums);
+                checkCUDAErrorFn("multi-scan failed!");
+                cudaDeviceSynchronize();
+                if (numBlocks > 1) {
+                    Efficient::prescan << <fullBlocksPerGrid_offsets, threads_offsets, sharedMem_offsets >> > (num_blocks_next_power_2, dev_buf_blockIncr, dev_buf_blockSums);
+                    checkCUDAErrorFn("prescan of offsets failed!");
+                    cudaDeviceSynchronize();
 
-            //    // Copy output to CPU
-            //    cudaMemcpy(odata, dev_buf_o, count * sizeof(int), cudaMemcpyDeviceToHost);
-            //    checkCUDAErrorFn("MemCpy dev_buf_o failed! (Copying output to cpu)");
+                    uniformAdd << <numBlocks, B / 2 >> > (n, dev_buf_indices, dev_buf_blockIncr, B);
+                    checkCUDAErrorFn("Uniform Add failed!");
+                    cudaDeviceSynchronize();
+                }
 
-            //    // Free data
-            //    cudaFree(dev_buf_indices);
-            //    checkCUDAErrorFn("CudaFree dev_buf_indices failed!");
-            //    cudaFree(dev_buf_i);
-            //    checkCUDAErrorFn("CudaFree dev_buf_i failed!");
-            //    cudaFree(dev_buf_bools);
-            //    checkCUDAErrorFn("CudaFree dev_buf_bools failed!");
-            //    cudaFree(dev_buf_o);
-            //    checkCUDAErrorFn("CudaFree dev_buf_o failed!");
-            timer().startGpuTimer();
-            int count = -1;
-            timer().endGpuTimer();
+                // Compact now
+                Common::kernScatter << < fullBlocksPerGrid, blockSize>>> (m, dev_buf_o, dev_buf_i, dev_buf_bools, dev_buf_indices);
+                checkCUDAErrorFn("efficient scatter failed!");
+                cudaDeviceSynchronize();
+                //----------------------------------------------------------------------------
+                timer().endGpuTimer();
+
+                // Compute size of compacted array
+                int last_index;
+                cudaMemcpy(&last_index, dev_buf_indices + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
+
+                int last_bool;
+                cudaMemcpy(&last_bool, dev_buf_bools + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
+
+                long long int count = (last_index + last_bool);
+
+                // Copy output to CPU
+                cudaMemcpy(odata, dev_buf_o, count * sizeof(int), cudaMemcpyDeviceToHost);
+                checkCUDAErrorFn("MemCpy dev_buf_o failed! (Copying output to cpu)");
+
+                // Free data
+                cudaFree(dev_buf_indices);
+                checkCUDAErrorFn("CudaFree dev_buf_indices failed!");
+                cudaFree(dev_buf_i);
+                checkCUDAErrorFn("CudaFree dev_buf_i failed!");
+                cudaFree(dev_buf_bools);
+                checkCUDAErrorFn("CudaFree dev_buf_bools failed!");
+                cudaFree(dev_buf_o);
+                checkCUDAErrorFn("CudaFree dev_buf_o failed!");
+
+                cudaFree(dev_buf_blockSums);
+                checkCUDAErrorFn("CudaFree dev_buf_blockSums in scan failed!");
+                cudaFree(dev_buf_blockIncr);
+                checkCUDAErrorFn("CudaFree dev_buf_blockIncr in scan failed!");
+            //timer().startGpuTimer();
+            //int count = -1;
+            //timer().endGpuTimer();
                 return count;
         }
     }
