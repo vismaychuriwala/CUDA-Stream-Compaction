@@ -16,7 +16,7 @@ namespace StreamCompaction {
             return timer;
         }
 
-        __global__ void prescan(int n, int* g_odata, int* g_idata)
+        __global__ void prescan(int n, int* g_odata, const int* g_idata)
         {
             int thid = threadIdx.x;
             int offset = 1;
@@ -66,6 +66,61 @@ namespace StreamCompaction {
             g_odata[bi] = temp[bi + bankOffsetB];
         }
 
+        __global__ void multi_scan(int global_n, int B, int* g_odata, const int* g_idata, int* blockSums)
+        {
+            int thid = threadIdx.x;
+            int base = B * blockIdx.x;
+            int offset = 1;
+            extern __shared__ int temp[];
+            int ai = thid;
+            int bi = thid + (B / 2);
+            int ga = base + ai; // Global indexes 
+            int gb = base + bi;
+            int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
+            int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+            temp[ai + bankOffsetA] =
+                g_idata[ga];
+            temp[bi + bankOffsetB] = g_idata[gb];
+            for (int d = B >> 1; d > 0; d >>= 1)
+                // build sum in place up the tree
+            {
+                __syncthreads();
+                if (thid < d)
+                {
+                    int ai = offset * (2 * thid + 1) - 1;
+                    int bi = offset * (2 * thid + 2) - 1;
+                    ai += CONFLICT_FREE_OFFSET(ai);
+                    bi += CONFLICT_FREE_OFFSET(bi);
+                    temp[bi] += temp[ai];
+                }
+                offset <<= 1;
+            }
+            if (thid == 0)
+            {
+                blockSums[blockIdx.x] =
+                    temp[B - 1 + CONFLICT_FREE_OFFSET(B - 1)];
+                temp[B - 1 + CONFLICT_FREE_OFFSET(B - 1)] = 0;
+            } // clear the last element
+            for (int d = 1; d < B; d <<= 1) // traverse down tree & build scan
+            {
+                offset >>= 1;
+                __syncthreads();
+                if (thid < d)
+                {
+                    int ai = offset * (2 * thid + 1) - 1;
+                    int bi = offset * (2 * thid + 2) - 1;
+                    ai += CONFLICT_FREE_OFFSET(ai);
+                    bi += CONFLICT_FREE_OFFSET(bi);
+                    int t = temp[ai];
+                    temp[ai] = temp[bi];
+                    temp[bi] += t;
+                }
+            }
+            __syncthreads();
+            g_odata[ga] = temp[ai + bankOffsetA];
+            g_odata[gb] = temp[bi + bankOffsetB];
+        }
+
         __global__ void make_exclusive(int n, int* odata, const int* idata) {
             int index = (blockIdx.x * blockDim.x) + threadIdx.x;
             if (index >= n) {
@@ -76,6 +131,20 @@ namespace StreamCompaction {
                 return;
             }
             odata[index] = idata[index - 1];
+        }
+
+        __global__ void uniformAdd(int n,
+            int* odata,
+            const int* blockIncr,
+            int B) {
+            int base = blockIdx.x * B;
+            int offset = blockIncr[blockIdx.x];  // scanned block sums
+
+            int i = base + threadIdx.x;
+            int j = base + threadIdx.x + (B / 2);
+
+            if (i < n) odata[i] += offset;
+            if (j < n) odata[j] += offset;
         }
 
         /**
@@ -95,26 +164,63 @@ namespace StreamCompaction {
                 n = 1 << ilog2ceil(n);
             }
 
-            dim3 fullBlocksPerGrid((n + blockSize - 1) / blockSize);
-            int sharedMemBytes = 2 * blockSize * sizeof(int);
+            //dim3 fullBlocksPerGrid((n + blockSize - 1) / blockSize);
+            //int sharedMemBytes = 2 * blockSize * sizeof(int);
             int* dev_buf_i = nullptr;
             int* dev_buf_o = nullptr;
+            int* dev_buf_blockSums = nullptr;
+            int* dev_buf_blockIncr = nullptr;
+
+            // Number of blocks and threads for Multi Scan
+            int B = 2 * blockSize;
+            int numBlocks = (n + B - 1) / B;    // ceil(n/B)
+            dim3 fullBlocksPerGrid(numBlocks);
+            int sharedMemBytes = (B + CONFLICT_FREE_OFFSET(B)) * sizeof(int);
 
             cudaMalloc((void**)&dev_buf_i, n * sizeof(int));
             checkCUDAErrorFn("cudaMalloc dev_buf_i in scan failed!");
+
             cudaMalloc((void**)&dev_buf_o, n * sizeof(int));
-            checkCUDAErrorFn("cudaMalloc dev_buf_o in scan failed!");\
+            checkCUDAErrorFn("cudaMalloc dev_buf_o in scan failed!");
 
             cudaMemcpy(dev_buf_i, idata, m * sizeof(int), cudaMemcpyHostToDevice);
             checkCUDAErrorFn("MemCpy dev_buf_i failed!");
 
+            int num_blocks_next_power_2 = 1 << ilog2ceil(numBlocks);
+            dim3 fullBlocksPerGrid_offsets((numBlocks + blockSize - 1) / blockSize);
+            int sharedMem_offsets = (num_blocks_next_power_2 + CONFLICT_FREE_OFFSET(num_blocks_next_power_2)) * sizeof(int);
+            int threads_offsets = num_blocks_next_power_2 / 2;
+            // If Multiple Blocks
+                cudaMalloc((void**)&dev_buf_blockSums, num_blocks_next_power_2 * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_blockSums in scan failed!");
+
+                if (num_blocks_next_power_2 > numBlocks) {
+                    cudaMemset(dev_buf_blockSums + numBlocks, 0,
+                        (num_blocks_next_power_2 - numBlocks) * sizeof(int));
+                }
+                cudaMalloc((void**)&dev_buf_blockIncr, num_blocks_next_power_2 * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_blockIncr in scan failed!");
+
             if (!is_pow_two) {
                 cudaMemset(dev_buf_i + m, 0, (n - m) * sizeof(int));
             }
+
             timer().startGpuTimer();
-            Efficient::prescan << <fullBlocksPerGrid, blockSize, sharedMemBytes >>> (n, dev_buf_o, dev_buf_i);
-            checkCUDAErrorFn("prescan failed!");
+
+            // Block-Wise Multi-Scan
+            Efficient::multi_scan <<<fullBlocksPerGrid, blockSize, sharedMemBytes >>> (n, B, dev_buf_o, dev_buf_i, dev_buf_blockSums);
+            checkCUDAErrorFn("multi-scan failed!");
             cudaDeviceSynchronize();
+            if (numBlocks > 1) {
+                Efficient::prescan << <fullBlocksPerGrid_offsets, threads_offsets, sharedMem_offsets >> > (num_blocks_next_power_2, dev_buf_blockIncr, dev_buf_blockSums);
+                checkCUDAErrorFn("prescan of offsets failed!");
+                cudaDeviceSynchronize();
+
+                uniformAdd << <numBlocks, B / 2 >> > (n, dev_buf_o, dev_buf_blockIncr, B);
+                checkCUDAErrorFn("Uniform Add failed!");
+                cudaDeviceSynchronize();
+            }
+
             timer().endGpuTimer();
 
             cudaMemcpy(odata, dev_buf_o, m * sizeof(int), cudaMemcpyDeviceToHost);
@@ -123,6 +229,11 @@ namespace StreamCompaction {
             checkCUDAErrorFn("CudaFree dev_buf_o in scan failed!");
             cudaFree(dev_buf_i);
             checkCUDAErrorFn("CudaFree dev_buf_i in scan failed!");
+
+            cudaFree(dev_buf_blockSums);
+            checkCUDAErrorFn("CudaFree dev_buf_blockSums in scan failed!");
+            cudaFree(dev_buf_blockIncr);
+            checkCUDAErrorFn("CudaFree dev_buf_blockIncr in scan failed!");
         }
 
         /**
@@ -135,92 +246,94 @@ namespace StreamCompaction {
          * @returns      The number of elements remaining after compaction.
          */
         int compact(int n, int* odata, const int* idata) {
-            //Check trivial cases:
-            if (n <= 0) {
-                return 0;
-            }
-            if (n == 1) {
-                if (idata[0] != 0)
-                {
-                    odata[0] = idata[0];
-                    return 1;
-                }
-                return 0;
-            }
-            dim3 fullBlocksPerGrid((n + blockSize - 1) / blockSize);
-            int m = n;
-            n = 1 << ilog2ceil(n);
+            ////Check trivial cases:
+            //if (n <= 0) {
+            //    return 0;
+            //}
+            //if (n == 1) {
+            //    if (idata[0] != 0)
+            //    {
+            //        odata[0] = idata[0];
+            //        return 1;
+            //    }
+            //    return 0;
+            //}
+            //dim3 fullBlocksPerGrid((n + blockSize - 1) / blockSize);
+            //int m = n;
+            //n = 1 << ilog2ceil(n);
            
-                // Allocate and assign input
-                int* dev_buf_i = nullptr;
-                cudaMalloc((void**)&dev_buf_i, n * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_i failed!");
-                cudaMemcpy(dev_buf_i, idata, m * sizeof(int), cudaMemcpyHostToDevice);
-                checkCUDAErrorFn("MemCpy dev_buf_i failed!");
+            //    // Allocate and assign input
+            //    int* dev_buf_i = nullptr;
+            //    cudaMalloc((void**)&dev_buf_i, n * sizeof(int));
+            //    checkCUDAErrorFn("cudaMalloc dev_buf_i failed!");
+            //    cudaMemcpy(dev_buf_i, idata, m * sizeof(int), cudaMemcpyHostToDevice);
+            //    checkCUDAErrorFn("MemCpy dev_buf_i failed!");
 
-                // Allocate bools buffer
-                int* dev_buf_bools = nullptr;
-                cudaMalloc((void**)&dev_buf_bools, n * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_bools failed!");
+            //    // Allocate bools buffer
+            //    int* dev_buf_bools = nullptr;
+            //    cudaMalloc((void**)&dev_buf_bools, n * sizeof(int));
+            //    checkCUDAErrorFn("cudaMalloc dev_buf_bools failed!");
 
-                //Allocate output buffer
-                int* dev_buf_o = nullptr;
-                cudaMalloc((void**)&dev_buf_o, m * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_o failed!");
+            //    //Allocate output buffer
+            //    int* dev_buf_o = nullptr;
+            //    cudaMalloc((void**)&dev_buf_o, m * sizeof(int));
+            //    checkCUDAErrorFn("cudaMalloc dev_buf_o failed!");
 
-                //Allocate indices buffer
-                int* dev_buf_indices = nullptr;
-                cudaMalloc((void**)&dev_buf_indices, n * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_indices failed!");
+            //    //Allocate indices buffer
+            //    int* dev_buf_indices = nullptr;
+            //    cudaMalloc((void**)&dev_buf_indices, n * sizeof(int));
+            //    checkCUDAErrorFn("cudaMalloc dev_buf_indices failed!");
 
-                cudaMemset(dev_buf_bools + m, 0, (n - m) * sizeof(int));    // Padding zeroes to nearest power of two
-                checkCUDAErrorFn("CudaMemset zeroes failed!");
+            //    cudaMemset(dev_buf_bools + m, 0, (n - m) * sizeof(int));    // Padding zeroes to nearest power of two
+            //    checkCUDAErrorFn("CudaMemset zeroes failed!");
 
-                // Compute shared memory sizes
-                dim3 fullBlocksPerGrid_scan((n + blockSize - 1) / blockSize);
-                int sharedMemBytes = 2 * blockSize * sizeof(int);
+            //    // Compute shared memory sizes
+            //    dim3 fullBlocksPerGrid_scan((n + blockSize - 1) / blockSize);
+            //    int sharedMemBytes = 2 * blockSize * sizeof(int);
 
-                timer().startGpuTimer();
+            //    timer().startGpuTimer();
 
-                // Fill bools buffer
-                Common::kernMapToBoolean <<<fullBlocksPerGrid, blockSize >> > (m, dev_buf_bools, dev_buf_i);
-                cudaDeviceSynchronize();
+            //    // Fill bools buffer
+            //    Common::kernMapToBoolean <<<fullBlocksPerGrid, blockSize >> > (m, dev_buf_bools, dev_buf_i);
+            //    cudaDeviceSynchronize();
 
-                // Scan bools to output
-                Efficient::prescan<<<fullBlocksPerGrid_scan, blockSize, sharedMemBytes>>> (n, dev_buf_indices, dev_buf_bools);
-                checkCUDAErrorFn("prescan failed!");
-                cudaDeviceSynchronize();
+            //    // Scan bools to output
+            //    Efficient::prescan<<<fullBlocksPerGrid_scan, blockSize, sharedMemBytes>>> (n, dev_buf_indices, dev_buf_bools);
+            //    checkCUDAErrorFn("prescan failed!");
+            //    cudaDeviceSynchronize();
 
-                // Compact now
-                Common::kernScatter << < fullBlocksPerGrid, blockSize>>> (m, dev_buf_o, dev_buf_i, dev_buf_bools, dev_buf_indices);
-                checkCUDAErrorFn("efficient scatter failed!");
-                cudaDeviceSynchronize();
+            //    // Compact now
+            //    Common::kernScatter << < fullBlocksPerGrid, blockSize>>> (m, dev_buf_o, dev_buf_i, dev_buf_bools, dev_buf_indices);
+            //    checkCUDAErrorFn("efficient scatter failed!");
+            //    cudaDeviceSynchronize();
 
-                timer().endGpuTimer();
+            //    timer().endGpuTimer();
 
-                // Compute size of compacted array
-                int last_index;
-                cudaMemcpy(&last_index, dev_buf_indices + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
+            //    // Compute size of compacted array
+            //    int last_index;
+            //    cudaMemcpy(&last_index, dev_buf_indices + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
 
-                int last_bool;
-                cudaMemcpy(&last_bool, dev_buf_bools + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
+            //    int last_bool;
+            //    cudaMemcpy(&last_bool, dev_buf_bools + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
 
-                long long int count = (last_index + last_bool);
+            //    long long int count = (last_index + last_bool);
 
-                // Copy output to CPU
-                cudaMemcpy(odata, dev_buf_o, count * sizeof(int), cudaMemcpyDeviceToHost);
-                checkCUDAErrorFn("MemCpy dev_buf_o failed! (Copying output to cpu)");
+            //    // Copy output to CPU
+            //    cudaMemcpy(odata, dev_buf_o, count * sizeof(int), cudaMemcpyDeviceToHost);
+            //    checkCUDAErrorFn("MemCpy dev_buf_o failed! (Copying output to cpu)");
 
-                // Free data
-                cudaFree(dev_buf_indices);
-                checkCUDAErrorFn("CudaFree dev_buf_indices failed!");
-                cudaFree(dev_buf_i);
-                checkCUDAErrorFn("CudaFree dev_buf_i failed!");
-                cudaFree(dev_buf_bools);
-                checkCUDAErrorFn("CudaFree dev_buf_bools failed!");
-                cudaFree(dev_buf_o);
-                checkCUDAErrorFn("CudaFree dev_buf_o failed!");
-
+            //    // Free data
+            //    cudaFree(dev_buf_indices);
+            //    checkCUDAErrorFn("CudaFree dev_buf_indices failed!");
+            //    cudaFree(dev_buf_i);
+            //    checkCUDAErrorFn("CudaFree dev_buf_i failed!");
+            //    cudaFree(dev_buf_bools);
+            //    checkCUDAErrorFn("CudaFree dev_buf_bools failed!");
+            //    cudaFree(dev_buf_o);
+            //    checkCUDAErrorFn("CudaFree dev_buf_o failed!");
+            timer().startGpuTimer();
+            int count = -1;
+            timer().endGpuTimer();
                 return count;
         }
     }
