@@ -66,12 +66,11 @@ namespace StreamCompaction {
          * @returns the number of elements remaining after compaction.
          */
         int compactWithScan(int n, int* odata, const int* idata) {
-            timer().startCpuTimer();
             if (n == 0) {
-                timer().endCpuTimer();
                 return 0;
             }
             int* bool_arr = new int[n];
+            timer().startCpuTimer();
             for (int k = 0; k < n; k++) {
                 int idat = idata[k];
                 if (idat == 0) {
@@ -94,9 +93,9 @@ namespace StreamCompaction {
                     odata[index] = idat;
                 }
             }
+            timer().endCpuTimer();
             int count = odata[n - 1] + bool_arr[n - 1];
             delete[] bool_arr;
-            timer().endCpuTimer();
             return count;
         }
     }

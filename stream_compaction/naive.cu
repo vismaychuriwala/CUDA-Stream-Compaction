@@ -16,12 +16,13 @@ namespace StreamCompaction {
             if (index >= n) {
                 return;
             }
+            int idata_at_index = idata[index];
             int two_pow_d_minus_one = 1 << (d - 1);
             if (index >= two_pow_d_minus_one) {
-                odata[index] = idata[index - two_pow_d_minus_one] + idata[index];
+                odata[index] = idata[index - two_pow_d_minus_one] + idata_at_index;
             }
             else {
-                odata[index] = idata[index];
+                odata[index] = idata_at_index;
             }
         }
 
@@ -32,9 +33,10 @@ namespace StreamCompaction {
             }
             if (index == 0) {
                 odata[index] = 0;
-                return;
             }
-            odata[index] = idata[index - 1];
+            else {
+                odata[index] = idata[index - 1];
+            }
         }
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
@@ -60,8 +62,8 @@ namespace StreamCompaction {
             cudaMemcpy(dev_bufA, idata, n * sizeof(int), cudaMemcpyHostToDevice);
             checkCUDAErrorFn("MemCpy dev_buf_A failed!");
 
-            timer().startGpuTimer();
             int num_iter = ilog2ceil(n);
+            timer().startGpuTimer();
 
             for (int d = 1; d <= num_iter; d++) {
                 onestep << <fullBlocksPerGrid, blockSize >> > (n, dev_bufB, dev_bufA, d);
@@ -71,7 +73,7 @@ namespace StreamCompaction {
             }
             // Inclusive Scan to Exclusive
             make_exclusive<<<fullBlocksPerGrid, blockSize >> > (n, dev_bufB, dev_bufA);  // Exclusive scan in dev_buf_B
-            checkCUDAErrorFn("Shift_right failed!");
+            checkCUDAErrorFn("make_exclusive failed!");
             cudaDeviceSynchronize();
             timer().endGpuTimer();
 
