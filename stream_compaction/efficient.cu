@@ -3,6 +3,10 @@
 #include "common.h"
 #include "efficient.h"
 
+#define NUM_BANKS 16
+#define LOG_NUM_BANKS 4
+#define CONFLICT_FREE_OFFSET(n)((n) >> NUM_BANKS + (n) >> (2 * LOG_NUM_BANKS))
+
 namespace StreamCompaction {
     namespace Efficient {
         using StreamCompaction::Common::PerformanceTimer;
@@ -17,8 +21,13 @@ namespace StreamCompaction {
             int thid = threadIdx.x;
             int offset = 1;
             extern __shared__ int temp[];
-            temp[2 * thid] = g_idata[2 * thid]; // load input into shared memory
-            temp[2*thid+1] = g_idata[2*thid+1];
+            int ai = thid;
+            int bi = thid + (n / 2);
+            int bankOffsetA = CONFLICT_FREE_OFFSET(ai);
+            int bankOffsetB = CONFLICT_FREE_OFFSET(bi);
+            temp[ai + bankOffsetA] =
+                g_idata[ai];
+            temp[bi + bankOffsetB] = g_idata[bi];
             for (int d = n >> 1; d > 0; d >>= 1)
                 // build sum in place up the tree
             {
@@ -27,13 +36,15 @@ namespace StreamCompaction {
                 {
                     int ai = offset * (2 * thid + 1) - 1;
                     int bi = offset * (2 * thid + 2) - 1;
+                    ai += CONFLICT_FREE_OFFSET(ai);
+                    bi += CONFLICT_FREE_OFFSET(bi);
                     temp[bi] += temp[ai];
                 }
                 offset <<= 1;
             }
             if (thid == 0)
             {
-                temp[n - 1] = 0;
+                temp[n - 1 + CONFLICT_FREE_OFFSET(n - 1)] = 0;
             } // clear the last element
             for (int d = 1; d < n; d <<= 1) // traverse down tree & build scan
             {
@@ -43,14 +54,16 @@ namespace StreamCompaction {
                 {
                     int ai = offset * (2 * thid + 1) - 1;
                     int bi = offset * (2 * thid + 2) - 1;
+                    ai += CONFLICT_FREE_OFFSET(ai);
+                    bi += CONFLICT_FREE_OFFSET(bi);
                     int t = temp[ai];
                     temp[ai] = temp[bi];
                     temp[bi] += t;
                 }
             }
             __syncthreads();
-            g_odata[2 * thid] = temp[2 * thid]; // write results to device memory
-            g_odata[2 * thid + 1] = temp[2 * thid + 1];
+            g_odata[ai] = temp[ai + bankOffsetA];
+            g_odata[bi] = temp[bi + bankOffsetB];
         }
 
         __global__ void make_exclusive(int n, int* odata, const int* idata) {
@@ -88,11 +101,11 @@ namespace StreamCompaction {
             int* dev_buf_o = nullptr;
 
             cudaMalloc((void**)&dev_buf_i, n * sizeof(int));
-            checkCUDAErrorFn("cudaMalloc dev_buf_i failed!");
+            checkCUDAErrorFn("cudaMalloc dev_buf_i in scan failed!");
             cudaMalloc((void**)&dev_buf_o, n * sizeof(int));
-            checkCUDAErrorFn("cudaMalloc dev_buf_o failed!");\
+            checkCUDAErrorFn("cudaMalloc dev_buf_o in scan failed!");\
 
-            cudaMemcpy(dev_buf_i, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+            cudaMemcpy(dev_buf_i, idata, m * sizeof(int), cudaMemcpyHostToDevice);
             checkCUDAErrorFn("MemCpy dev_buf_i failed!");
 
             if (!is_pow_two) {
@@ -105,11 +118,11 @@ namespace StreamCompaction {
             timer().endGpuTimer();
 
             cudaMemcpy(odata, dev_buf_o, m * sizeof(int), cudaMemcpyDeviceToHost);
-            checkCUDAErrorFn("MemCpy dev_buf_o failed!");
+            checkCUDAErrorFn("MemCpy dev_buf_o in scan failed!");
             cudaFree(dev_buf_o);
-            checkCUDAErrorFn("CudaFree dev_buf_o failed!");
+            checkCUDAErrorFn("CudaFree dev_buf_o in scan failed!");
             cudaFree(dev_buf_i);
-            checkCUDAErrorFn("CudaFree dev_buf_i failed!");
+            checkCUDAErrorFn("CudaFree dev_buf_i in scan failed!");
         }
 
         /**
@@ -145,7 +158,6 @@ namespace StreamCompaction {
                 cudaMemcpy(dev_buf_i, idata, m * sizeof(int), cudaMemcpyHostToDevice);
                 checkCUDAErrorFn("MemCpy dev_buf_i failed!");
 
-         
                 // Allocate bools buffer
                 int* dev_buf_bools = nullptr;
                 cudaMalloc((void**)&dev_buf_bools, n * sizeof(int));
@@ -154,7 +166,7 @@ namespace StreamCompaction {
                 //Allocate output buffer
                 int* dev_buf_o = nullptr;
                 cudaMalloc((void**)&dev_buf_o, m * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_i failed!");
+                checkCUDAErrorFn("cudaMalloc dev_buf_o failed!");
 
                 //Allocate indices buffer
                 int* dev_buf_indices = nullptr;
@@ -193,11 +205,11 @@ namespace StreamCompaction {
                 int last_bool;
                 cudaMemcpy(&last_bool, dev_buf_bools + m - 1, sizeof(int), cudaMemcpyDeviceToHost);
 
-                int count = (last_index + last_bool);
+                long long int count = (last_index + last_bool);
 
                 // Copy output to CPU
                 cudaMemcpy(odata, dev_buf_o, count * sizeof(int), cudaMemcpyDeviceToHost);
-                checkCUDAErrorFn("MemCpy dev_buf_o failed!");
+                checkCUDAErrorFn("MemCpy dev_buf_o failed! (Copying output to cpu)");
 
                 // Free data
                 cudaFree(dev_buf_indices);
