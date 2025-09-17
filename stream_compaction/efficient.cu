@@ -3,10 +3,10 @@
 #include "common.h"
 #include "efficient.h"
 
-#define NUM_BANKS 16
-#define LOG_NUM_BANKS 4
-#define CONFLICT_FREE_OFFSET(n)((n) >> NUM_BANKS + (n) >> (2 * LOG_NUM_BANKS))
-
+#define NUM_BANKS 32
+#define LOG_NUM_BANKS 5
+//#define CONFLICT_FREE_OFFSET(n)((n) >> NUM_BANKS + (n) >> (2 * LOG_NUM_BANKS))
+#define CONFLICT_FREE_OFFSET(n) ((n) >>(LOG_NUM_BANKS))
 namespace StreamCompaction {
     namespace Efficient {
         using StreamCompaction::Common::PerformanceTimer;
@@ -381,9 +381,6 @@ namespace StreamCompaction {
                 checkCUDAErrorFn("CudaFree dev_buf_blockSums in scan failed!");
                 cudaFree(dev_buf_blockIncr);
                 checkCUDAErrorFn("CudaFree dev_buf_blockIncr in scan failed!");
-            //timer().startGpuTimer();
-            //int count = -1;
-            //timer().endGpuTimer();
                 return count;
         }
     }
