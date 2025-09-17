@@ -1,6 +1,8 @@
 #include <cstdio>
 #include "cpu.h"
 #include "common.h"
+#include <vector>
+#include <algorithm>
 
 namespace StreamCompaction {
     namespace CPU {
@@ -97,6 +99,15 @@ namespace StreamCompaction {
             int count = odata[n - 1] + bool_arr[n - 1];
             delete[] bool_arr;
             return count;
+        }
+        void sort(int n, int* odata, const int* idata) {
+            // Copy input into output
+            std::copy(idata, idata + n, odata);
+
+            // Sort the copy
+            timer().startCpuTimer();
+            std::sort(odata, odata + n);
+            timer().endCpuTimer();
         }
     }
 }

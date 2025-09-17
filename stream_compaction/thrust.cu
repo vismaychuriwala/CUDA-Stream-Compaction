@@ -32,9 +32,6 @@ namespace StreamCompaction {
 
             // copy device -> host
             thrust::copy(d_out.begin(), d_out.end(), odata);
-
-            
-            
         }
     }
 }
