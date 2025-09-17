@@ -1,0 +1,192 @@
+** SCAN TESTS **
+blockSize= 32
+11.4302
+** SCAN TESTS **
+blockSize= 32
+10.533
+** SCAN TESTS **
+blockSize= 32
+10.6891
+** SCAN TESTS **
+blockSize= 32
+10.5644
+** SCAN TESTS **
+blockSize= 32
+10.7888
+** SCAN TESTS **
+blockSize= 32
+10.7962
+** SCAN TESTS **
+blockSize= 32
+10.8693
+** SCAN TESTS **
+blockSize= 32
+10.6384
+** SCAN TESTS **
+blockSize= 32
+10.6246
+** SCAN TESTS **
+blockSize= 32
+10.839
+** SCAN TESTS **
+blockSize= 64
+7.29376
+** SCAN TESTS **
+blockSize= 64
+6.92973
+** SCAN TESTS **
+blockSize= 64
+6.94682
+** SCAN TESTS **
+blockSize= 64
+6.98816
+** SCAN TESTS **
+blockSize= 64
+6.87296
+** SCAN TESTS **
+blockSize= 64
+7.09789
+** SCAN TESTS **
+blockSize= 64
+7.03043
+** SCAN TESTS **
+blockSize= 64
+7.06954
+** SCAN TESTS **
+blockSize= 64
+6.96989
+** SCAN TESTS **
+blockSize= 64
+6.85994
+** SCAN TESTS **
+blockSize= 64
+7.00032
+** SCAN TESTS **
+blockSize= 128
+5.86563
+** SCAN TESTS **
+blockSize= 128
+6.03846
+** SCAN TESTS **
+blockSize= 128
+5.90906
+** SCAN TESTS **
+blockSize= 128
+6.01888
+** SCAN TESTS **
+blockSize= 128
+5.94816
+** SCAN TESTS **
+blockSize= 128
+6.57162
+** SCAN TESTS **
+blockSize= 128
+6.43235
+** SCAN TESTS **
+blockSize= 128
+5.99184
+** SCAN TESTS **
+blockSize= 128
+5.95002
+** SCAN TESTS **
+blockSize= 128
+6.22931
+** SCAN TESTS **
+blockSize= 256
+11.7848
+** SCAN TESTS **
+blockSize= 256
+6.09424
+** SCAN TESTS **
+blockSize= 256
+5.98832
+** SCAN TESTS **
+blockSize= 256
+6.08637
+** SCAN TESTS **
+blockSize= 256
+5.91056
+** SCAN TESTS **
+blockSize= 256
+6.15024
+** SCAN TESTS **
+blockSize= 256
+6.07635
+** SCAN TESTS **
+blockSize= 256
+6.1169
+** SCAN TESTS **
+blockSize= 256
+6.13814
+** SCAN TESTS **
+blockSize= 256
+5.80851
+** SCAN TESTS **
+blockSize= 512
+6.6457
+** SCAN TESTS **
+blockSize= 512
+6.2737
+** SCAN TESTS **
+blockSize= 512
+6.38054
+** SCAN TESTS **
+blockSize= 512
+6.39696
+** SCAN TESTS **
+blockSize= 512
+6.32326
+** SCAN TESTS **
+blockSize= 512
+6.31642
+** SCAN TESTS **
+blockSize= 512
+6.36275
+** SCAN TESTS **
+blockSize= 512
+6.1615
+** SCAN TESTS **
+blockSize= 512
+6.34816
+** SCAN TESTS **
+blockSize= 512
+6.80384
+** SCAN TESTS **
+blockSize= 512
+6.45811
+** SCAN TESTS **
+blockSize= 512
+6.29962
+** SCAN TESTS **
+blockSize= 512
+6.58864
+** SCAN TESTS **
+blockSize= 1024
+7.60422
+** SCAN TESTS **
+blockSize= 1024
+7.67088
+** SCAN TESTS **
+blockSize= 1024
+7.75478
+** SCAN TESTS **
+blockSize= 1024
+7.63782
+** SCAN TESTS **
+blockSize= 1024
+7.52176
+** SCAN TESTS **
+blockSize= 1024
+7.58723
+** SCAN TESTS **
+blockSize= 1024
+7.83197
+** SCAN TESTS **
+blockSize= 1024
+7.09651
+** SCAN TESTS **
+blockSize= 1024
+7.53715
+** SCAN TESTS **
+blockSize= 1024
+7.72787
