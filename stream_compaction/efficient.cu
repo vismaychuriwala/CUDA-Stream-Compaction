@@ -147,6 +147,44 @@ namespace StreamCompaction {
             if (j < n) odata[j] += offset;
         }
 
+        void recursiveScan(int n, int* d_out, int* d_in) {
+            // Number of blocks and threads
+            int B = 2 * blockSize;
+            int numBlocks = (n + B - 1) / B;    // ceil(n / B)
+            dim3 fullBlocksPerGrid(numBlocks);
+            int sharedMemBytes = (B + CONFLICT_FREE_OFFSET(B)) * sizeof(int);
+            int num_blocks_next_power_2 = 1 << ilog2ceil(numBlocks);
+            int*blockSums = nullptr;   // Per-block Sums
+
+            // Allocate and copy Memory
+            cudaMalloc((void**)&blockSums, num_blocks_next_power_2 * sizeof(int));
+            checkCUDAErrorFn("cudaMalloc dev_buf_blockSums in scan failed!");
+
+            if (num_blocks_next_power_2 > numBlocks) {
+                cudaMemset(blockSums + numBlocks, 0,
+                    (num_blocks_next_power_2 - numBlocks) * sizeof(int));
+            }
+
+            // Block-Wise Multi-Scan
+            Efficient::multi_scan << <fullBlocksPerGrid, blockSize, sharedMemBytes >>> (n, B, d_out, d_in, blockSums);
+            checkCUDAErrorFn("multi-scan failed!");
+            cudaDeviceSynchronize();
+            if (numBlocks > 1) {
+                int* blockIncr = nullptr;   // Per-block sums scan
+                cudaMalloc((void**)&blockIncr, num_blocks_next_power_2 * sizeof(int));
+                checkCUDAErrorFn("cudaMalloc dev_buf_blockIncr in scan failed!");
+                Efficient::recursiveScan (num_blocks_next_power_2, blockIncr, blockSums);
+                checkCUDAErrorFn("prescan of offsets failed!");
+                cudaDeviceSynchronize();
+                uniformAdd <<<numBlocks, B / 2>> > (n, d_out, blockIncr, B);
+                checkCUDAErrorFn("Uniform Add failed!");
+                cudaDeviceSynchronize();
+                cudaFree(blockIncr);
+                checkCUDAErrorFn("CudaFree blockIncr in scan failed!");
+            }
+            cudaFree(blockSums);
+            checkCUDAErrorFn("CudaFree blockSums in scan failed!");
+        }
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
@@ -167,17 +205,8 @@ namespace StreamCompaction {
 
             int* dev_buf_i = nullptr;   //Input buffer
             int* dev_buf_o = nullptr;   //Output buffer
-            int* dev_buf_blockSums = nullptr;   // Per-block Sums
-            int* dev_buf_blockIncr = nullptr;   // Per-block sums scan
-
+            
             // Multi Scan
-
-            // Number of blocks and threads
-            int B = 2 * blockSize;
-            int numBlocks = (n + B - 1) / B;    // ceil(n / B)
-            dim3 fullBlocksPerGrid(numBlocks);
-            int sharedMemBytes = (B + CONFLICT_FREE_OFFSET(B)) * sizeof(int);
-
             // Allocate and copy Memory
             cudaMalloc((void**)&dev_buf_i, n * sizeof(int));
             checkCUDAErrorFn("cudaMalloc dev_buf_i in scan failed!");
@@ -191,43 +220,14 @@ namespace StreamCompaction {
 
             // Inter-Block Accumulation
 
-            // Number of blocks and threads
-            int num_blocks_next_power_2 = 1 << ilog2ceil(numBlocks);
-            dim3 fullBlocksPerGrid_offsets((numBlocks + blockSize - 1) / blockSize);
-            int sharedMem_offsets = (num_blocks_next_power_2 + CONFLICT_FREE_OFFSET(num_blocks_next_power_2)) * sizeof(int);
-            int threads_offsets = num_blocks_next_power_2 / 2;
-
-            // Allocate and copy Memory
-                cudaMalloc((void**)&dev_buf_blockSums, num_blocks_next_power_2 * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_blockSums in scan failed!");
-
-                if (num_blocks_next_power_2 > numBlocks) {
-                    cudaMemset(dev_buf_blockSums + numBlocks, 0,
-                        (num_blocks_next_power_2 - numBlocks) * sizeof(int));
-                }
-                cudaMalloc((void**)&dev_buf_blockIncr, num_blocks_next_power_2 * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_blockIncr in scan failed!");
+            //// Number of blocks and threads
 
             if (!is_pow_two) {
                 cudaMemset(dev_buf_i + m, 0, (n - m) * sizeof(int));
             }
 
             timer().startGpuTimer();
-
-            // Block-Wise Multi-Scan
-            Efficient::multi_scan <<<fullBlocksPerGrid, blockSize, sharedMemBytes >>> (n, B, dev_buf_o, dev_buf_i, dev_buf_blockSums);
-            checkCUDAErrorFn("multi-scan failed!");
-            cudaDeviceSynchronize();
-            if (numBlocks > 1) {
-                Efficient::prescan << <fullBlocksPerGrid_offsets, threads_offsets, sharedMem_offsets >> > (num_blocks_next_power_2, dev_buf_blockIncr, dev_buf_blockSums);
-                checkCUDAErrorFn("prescan of offsets failed!");
-                cudaDeviceSynchronize();
-
-                uniformAdd << <numBlocks, B / 2 >> > (n, dev_buf_o, dev_buf_blockIncr, B);
-                checkCUDAErrorFn("Uniform Add failed!");
-                cudaDeviceSynchronize();
-            }
-
+            Efficient::recursiveScan(n, dev_buf_o, dev_buf_i);
             timer().endGpuTimer();
 
             cudaMemcpy(odata, dev_buf_o, m * sizeof(int), cudaMemcpyDeviceToHost);
@@ -236,11 +236,6 @@ namespace StreamCompaction {
             checkCUDAErrorFn("CudaFree dev_buf_o in scan failed!");
             cudaFree(dev_buf_i);
             checkCUDAErrorFn("CudaFree dev_buf_i in scan failed!");
-
-            cudaFree(dev_buf_blockSums);
-            checkCUDAErrorFn("CudaFree dev_buf_blockSums in scan failed!");
-            cudaFree(dev_buf_blockIncr);
-            checkCUDAErrorFn("CudaFree dev_buf_blockIncr in scan failed!");
         }
 
         /**
@@ -294,38 +289,6 @@ namespace StreamCompaction {
                 cudaMemset(dev_buf_bools + m, 0, (n - m) * sizeof(int));    // Padding zeroes to nearest power of two
                 checkCUDAErrorFn("CudaMemset zeroes failed!");
 
-                // Compute shared memory sizes
-                //dim3 fullBlocksPerGrid_scan((n + blockSize - 1) / blockSize);
-                //int sharedMemBytes = 2 * blockSize * sizeof(int);
-
-                // Number of blocks and threads
-                int B = 2 * blockSize;
-                int numBlocks = (n + B - 1) / B;    // ceil(n / B)
-                dim3 fullBlocksPerGrid_scan(numBlocks);
-                int sharedMemBytes_scan = (B + CONFLICT_FREE_OFFSET(B)) * sizeof(int);
-
-                // Inter-Block Accumulation
-
-                int* dev_buf_blockSums = nullptr;   // Per-block Sums
-                int* dev_buf_blockIncr = nullptr;   // Per-block sums scan
-
-                // Number of blocks and threads
-                int num_blocks_next_power_2 = 1 << ilog2ceil(numBlocks);
-                dim3 fullBlocksPerGrid_offsets((numBlocks + blockSize - 1) / blockSize);
-                int sharedMem_offsets = (num_blocks_next_power_2 + CONFLICT_FREE_OFFSET(num_blocks_next_power_2)) * sizeof(int);
-                int threads_offsets = num_blocks_next_power_2 / 2;
-
-                // Allocate and copy Memory
-                cudaMalloc((void**)&dev_buf_blockSums, num_blocks_next_power_2 * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_blockSums in scan failed!");
-
-                if (num_blocks_next_power_2 > numBlocks) {
-                    cudaMemset(dev_buf_blockSums + numBlocks, 0,
-                        (num_blocks_next_power_2 - numBlocks) * sizeof(int));
-                }
-                cudaMalloc((void**)&dev_buf_blockIncr, num_blocks_next_power_2 * sizeof(int));
-                checkCUDAErrorFn("cudaMalloc dev_buf_blockIncr in scan failed!");
-
                 
                 timer().startGpuTimer();
                 //------------------------------------GPU--------------------------------------
@@ -334,18 +297,7 @@ namespace StreamCompaction {
                 cudaDeviceSynchronize();
 
                 // Scan bools to output
-                Efficient::multi_scan << <fullBlocksPerGrid_scan, blockSize, sharedMemBytes_scan >> > (n, B, dev_buf_indices, dev_buf_bools, dev_buf_blockSums);
-                checkCUDAErrorFn("multi-scan failed!");
-                cudaDeviceSynchronize();
-                if (numBlocks > 1) {
-                    Efficient::prescan << <fullBlocksPerGrid_offsets, threads_offsets, sharedMem_offsets >> > (num_blocks_next_power_2, dev_buf_blockIncr, dev_buf_blockSums);
-                    checkCUDAErrorFn("prescan of offsets failed!");
-                    cudaDeviceSynchronize();
-
-                    uniformAdd << <numBlocks, B / 2 >> > (n, dev_buf_indices, dev_buf_blockIncr, B);
-                    checkCUDAErrorFn("Uniform Add failed!");
-                    cudaDeviceSynchronize();
-                }
+                Efficient::recursiveScan(n, dev_buf_indices, dev_buf_bools);
 
                 // Compact now
                 Common::kernScatter << < fullBlocksPerGrid, blockSize>>> (m, dev_buf_o, dev_buf_i, dev_buf_bools, dev_buf_indices);
@@ -376,11 +328,6 @@ namespace StreamCompaction {
                 checkCUDAErrorFn("CudaFree dev_buf_bools failed!");
                 cudaFree(dev_buf_o);
                 checkCUDAErrorFn("CudaFree dev_buf_o failed!");
-
-                cudaFree(dev_buf_blockSums);
-                checkCUDAErrorFn("CudaFree dev_buf_blockSums in scan failed!");
-                cudaFree(dev_buf_blockIncr);
-                checkCUDAErrorFn("CudaFree dev_buf_blockIncr in scan failed!");
                 return count;
         }
     }

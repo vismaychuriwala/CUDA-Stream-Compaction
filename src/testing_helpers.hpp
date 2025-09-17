@@ -6,6 +6,8 @@
 #include <string>
 #include <ctime>
 
+int TESTING = 0;
+
 template<typename T>
 int cmpArrays(int n, T *a, T *b) {
     for (int i = 0; i < n; i++) {
@@ -24,7 +26,7 @@ void printDesc(const char *desc) {
 template<typename T>
 void printCmpResult(int n, T *a, T *b) {
     char* ans = cmpArrays(n, a, b) ? "FAIL VALUE" : "passed";
-    if (ans != "passed") {
+    if (!TESTING || ans != "passed") {
         printf("%s \n",
             ans);
     }
@@ -37,7 +39,7 @@ void printCmpLenResult(int n, int expN, T *a, T *b) {
     }
     char* ans = (n == -1 || n != expN) ? "FAIL COUNT" :
         cmpArrays(n, a, b) ? "FAIL VALUE" : "passed";
-    if (ans != "passed") {
+    if (!TESTING || ans != "passed") {
         printf("%s \n",
             ans);
     }
@@ -75,13 +77,13 @@ void printArray(int n, int *a, bool abridged = false) {
     printf("]\n");
 }
 
-//template<typename T>
-//void printElapsedTime(T time, std::string note = "")
-//{
-//    std::cout << "   elapsed time: " << time << "ms    " << note << std::endl;
-//}
 template<typename T>
 void printElapsedTime(T time, std::string note = "")
 {
-    std::cout << time << std::endl;
+    std::cout << "   elapsed time: " << time << "ms    " << note << std::endl;
 }
+//template<typename T>
+//void printElapsedTime(T time, std::string note = "")
+//{
+//    std::cout << time << std::endl;
+//}
