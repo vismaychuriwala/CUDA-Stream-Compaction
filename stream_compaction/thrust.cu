@@ -27,12 +27,13 @@ namespace StreamCompaction {
             timer().startGpuTimer();
             // exclusive scan on device
             thrust::exclusive_scan(d_in.begin(), d_in.end(), d_out.begin());
+            cudaDeviceSynchronize(); // ensure timing is correct
             timer().endGpuTimer();
 
             // copy device -> host
             thrust::copy(d_out.begin(), d_out.end(), odata);
 
-            cudaDeviceSynchronize(); // ensure timing is correct
+            
             
         }
     }

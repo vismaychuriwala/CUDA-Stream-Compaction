@@ -6,18 +6,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, LogLocator, FixedLocator, LogFormatterMathtext
 
-# Configuration
-INPUT_PATH = Path("../data/timings.txt")
-OUTPUT_ALL_RUNS_CSV = Path("../data/timings_all_runs_long.csv")
-OUTPUT_AVG_CSV = Path("../data/timings_avg.csv")
-OUTPUT_PLOT = Path("../data/timings_plot.png")
-OUTPUT_PLOT_POW2 = Path("../timings_plot_pow2.png")
-OUTPUT_PLOT_NONPOW2 = Path("../timings_plot_nonpow2.png")
-OUTPUT_PLOT_BOTH = Path("../timings_plot_both.png")
-OUTPUT_PLOT_BOTH_LOG = Path("../timings_plot_both_loglog.png")
-OUTPUT_PLOT_POW2_LOG = Path("../timings_plot_pow2_loglog.png")
-OUTPUT_PLOT_NONPOW2_LOG = Path("../timings_plot_nonpow2_loglog.png")
-OUTPUT_PLOT_BOTH_LOG_FULL = Path("../timings_plot_both_loglog_full.png")
+# Configuration (resolve paths relative to this file for robustness)
+BASE_DIR = Path(__file__).resolve().parent  # plots/code
+PLOTS_DIR = BASE_DIR.parent                 # plots
+DATA_DIR = PLOTS_DIR / "data"              # plots/data
+
+INPUT_PATH = DATA_DIR / "timings.txt"
+OUTPUT_ALL_RUNS_CSV = DATA_DIR / "timings_all_runs_long.csv"
+OUTPUT_AVG_CSV = DATA_DIR / "timings_avg.csv"
+OUTPUT_PLOT = DATA_DIR / "timings_plot.png"
+OUTPUT_PLOT_POW2 = PLOTS_DIR / "timings_plot_pow2.png"
+OUTPUT_PLOT_NONPOW2 = PLOTS_DIR / "timings_plot_nonpow2.png"
+OUTPUT_PLOT_BOTH = PLOTS_DIR / "timings_plot_both.png"
+OUTPUT_PLOT_BOTH_LOG = PLOTS_DIR / "timings_plot_both_loglog.png"
+OUTPUT_PLOT_POW2_LOG = PLOTS_DIR / "timings_plot_pow2_loglog.png"
+OUTPUT_PLOT_NONPOW2_LOG = PLOTS_DIR / "timings_plot_nonpow2_loglog.png"
+OUTPUT_PLOT_BOTH_LOG_FULL = PLOTS_DIR / "timings_plot_both_loglog_full.png"
 
 # If your numbers are in seconds (very likely), set this to True to convert
 # to milliseconds for plotting convenience.
@@ -237,9 +241,9 @@ def plot_by_suite(
     else:
         plot_df["time_val"] = plot_df["time_s"]
 
-    # Optional filter on minimum size for plotting
+    # Optional filter on minimum size for plotting (strictly greater than)
     if min_size is not None:
-        plot_df = plot_df[plot_df["size"] >= min_size]
+        plot_df = plot_df[plot_df["size"] > min_size]
 
     # Use all sizes; split by method family (pow2/nonpow2)
     sizes = sorted(plot_df["size"].unique())
@@ -350,11 +354,34 @@ def plot_by_suite(
     ax.legend(fontsize=8, ncol=2, loc="upper left", bbox_to_anchor=(0, 1.02))
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
 
-    subset_note = {
-        "all": "All sizes",
+    # Build a clear, accurate title segment about the size subset.
+    # If a minimum size filter excludes smaller inputs, reflect that using
+    # compact binary units (e.g., "256k" instead of 2^18).
+    overall_min_size = int(avg_df["size"].min()) if not avg_df.empty else None
+    def _fmt_min(s: int) -> str:
+        if s is None:
+            return ""
+        # Prefer binary multiples: k, M, G
+        for unit, factor in (("k", 1024), ("M", 1024**2), ("G", 1024**3)):
+            if s % factor == 0 and s >= factor:
+                val = s // factor
+                # Keep it simple (e.g., 256k, 1M, 4G)
+                return f"{val}{unit}"
+        return f"{s:,}"
+
+    filtered = (
+        min_size is not None
+        and overall_min_size is not None
+        and min_size > overall_min_size
+    )
+    base_subset = {
+        "all": "All sizes" if not filtered else "Sizes",
         "pow2": "Power-of-two sizes",
         "nonpow2": "Non-power-of-two sizes",
-    }.get(method_subset, "All sizes")
+    }.get(method_subset, "All sizes" if not filtered else "Sizes")
+    subset_note = (
+        f"{base_subset} > {_fmt_min(min_size)}" if filtered else base_subset
+    )
     y_unit = "ms" if to_ms else "s"
     if log_x and log_y:
         scale_note = " [log-x, log-y]"
