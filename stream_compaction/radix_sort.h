@@ -7,7 +7,7 @@ namespace StreamCompaction {
         // Reuse the same timer interface as other modules
         StreamCompaction::Common::PerformanceTimer& timer();
 
-        // Stable LSD radix sort over 32-bit signed ints (to be implemented)
+        // Stable LSD radix sort
         // Sorts idata into odata. Length is n.
         void sort(int n, int* odata, const int* idata);
     }

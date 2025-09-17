@@ -147,7 +147,7 @@ namespace StreamCompaction {
             if (j < n) odata[j] += offset;
         }
 
-        void recursiveScan(int n, int* d_out, int* d_in) {
+        void recursiveScan(int n, int* d_out, const int* d_in) {
             // Number of blocks and threads
             int B = 2 * blockSize;
             int numBlocks = (n + B - 1) / B;    // ceil(n / B)

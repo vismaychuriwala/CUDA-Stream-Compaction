@@ -8,5 +8,6 @@ namespace StreamCompaction {
 
         void scan(int n, int *odata, const int *idata);
         int compact(int n, int *odata, const int *idata);
+        void recursiveScan(int n, int* d_out, const int* d_in);
     }
 }
