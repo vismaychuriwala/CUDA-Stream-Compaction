@@ -57,7 +57,7 @@ def plot(blocks, avgs, output_path: str | None):
     ax.plot(blocks, avgs, marker="o", linestyle="-", color="#1f77b4")
     ax.set_xlabel("Block Size")
     ax.set_ylabel("Average Time (ms)")
-    ax.set_title("Block Size vs Average Timing")
+    ax.set_title("Block Size vs Average Timing(lower is better)")
     # Use logarithmic scale for block size (base 2 preferred)
     try:
         ax.set_xscale("log", base=2)
@@ -78,8 +78,8 @@ def plot(blocks, avgs, output_path: str | None):
 
 def main():
     parser = argparse.ArgumentParser(description="Plot block size vs average timings (log-scaled x-axis).")
-    parser.add_argument("--input", "-i", default="blockSize_timings.txt", help="Path to timings input file.")
-    parser.add_argument("--output", "-o", default="blocksize_avg.png", help="Output PNG path for the plot.")
+    parser.add_argument("--input", "-i", default="../data/blockSize_timings.txt", help="Path to timings input file.")
+    parser.add_argument("--output", "-o", default="../blocksize_avg.png", help="Output PNG path for the plot.")
     args = parser.parse_args()
 
     data = parse_timings(args.input)

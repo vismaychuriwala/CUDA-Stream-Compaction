@@ -310,7 +310,7 @@ def plot_by_suite(
     if min_size is not None and len(sizes) > 0:
         ax.set_xlim(left=min_size)
     ax.legend(fontsize=8, ncol=2, loc="upper left", bbox_to_anchor=(0, 1.02))
-    ax.grid(True, which="both", linestyle="--", alpha=0.4)
+    # ax.grid(True, which="both", linestyle="--", alpha=0.4)
 
     # Compaction subplot
     ax = axes[1]
@@ -352,7 +352,7 @@ def plot_by_suite(
     if min_size is not None and len(sizes) > 0:
         ax.set_xlim(left=min_size)
     ax.legend(fontsize=8, ncol=2, loc="upper left", bbox_to_anchor=(0, 1.02))
-    ax.grid(True, which="both", linestyle="--", alpha=0.4)
+    # ax.grid(True, which="both", linestyle="--", alpha=0.4)
 
     # Build a clear, accurate title segment about the size subset.
     # If a minimum size filter excludes smaller inputs, reflect that using

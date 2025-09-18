@@ -13,9 +13,10 @@
 This is a CUDA-powered parallel implementation of stream compaction. Stream compaction reduces arrays by retaining only non-zero values. This seems to be a fairly straightforward problem that can be coded sequentially in a couple of minutes, but as we will see, this is extremely slow on the CPU for large arrays and using a GPU to parallelize this process can be orders of magnitude faster.
 
 Here are some cool features I have implemented:
-* Using shared memory for efficient memory access on the GPU (as opposed to using global memory, which is more than 100× slower ([see more here](https://www.ce.jhu.edu/dalrymple/classes/602/Class13.pdf))).
-* Hardware optimization via [bank conflicts](https://forums.developer.nvidia.com/t/how-to-understand-the-bank-conflict-of-shared-mem/260900) prevention.
-* Recursive scanning to scan arrays of arbitrary sizes (tested up to 1B elements (2^30), which took 3470.59 ms).
+* Using **Shared Memory (SM)** for efficient memory access on the GPU (as opposed to using global memory, which is more than 100× slower ([see more here](https://www.ce.jhu.edu/dalrymple/classes/602/Class13.pdf))).
+* **Hardware optimization** via [bank conflicts](https://forums.developer.nvidia.com/t/how-to-understand-the-bank-conflict-of-shared-mem/260900) prevention.
+* Recursive scanning to scan **arrays of arbitrary sizes** (tested up to 1B elements (2^30), which took 3470.59 ms).
+* **Radix Sort** using Parallel Scan
 * Naive and CPU-based implementations to compare and benchmark techniques.
 * Customized testing code to collect, average, and plot GPU and CPU timings.
 
@@ -24,6 +25,12 @@ Scan is a prefix-sum. I used the work‑efficient Blelloch scan (upsweep/downswe
 
 Stream compaction rides on top of scan. First I build a bools array (0/1 flag per element, i.e., keep if value != 0). Then I exclusive‑scan the flags to get output indices, and scatter only the keepers. That makes the compaction stable and very GPU‑friendly. I include a naive version, a work‑efficient version, and a CPU baseline so you can sanity‑check correctness and see the speedups on both power‑of‑two and non‑power‑of‑two (NPOT) sizes.
 
+## Radix Sort using CUDA
+I implement an LSD integer radix sort on the GPU built on the same work‑efficient Blelloch scans used above. For each bit (0→31), I split elements into 0/1 buckets via bit tests, exclusive‑scan the flags to get stable write indices, and scatter into ping‑pong buffers. Blocks use shared memory with coalesced global accesses; NPOT inputs are handled by padding internal scan buffers while keeping counts based on the original length. The algorithm is stable, scales to large arrays, and currently targets non‑negative 32‑bit integers. A CPU `std::sort` baseline is included for correctness and performance comparisons.
+
+![Radix Sort](img/radix_sort_nvidia.png)
+
+[Source - NVIDIA](https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda)
 ## Performance Analysis
 I benchmarked each method across a range of sizes (both power‑of‑two and NPOT), averaged over 10 runs. The work‑efficient GPU scan/compaction wins big, especially as input grows; NPOT handling adds minor overhead but stays close.
 
@@ -44,6 +51,18 @@ You can find the raw images and variants in `plots/` if you want the linear‑sc
 I ran the work‑efficient compaction for multiple block sizes to get the best block size for my implementation. Here are the timings for 33M elements (2^25), averaged over 10 runs.
 ![Timings (block sizes)](plots/blocksize_avg.png)
 A block size of 128 seems to be a good choice for `Efficient::compact`.
+
+### Radix Sort
+
+I implemented radix sort using `Efficient::recursiveScan` to sort positive integer arrays of arbitrary lengths. I used `std::sort` for the CPU version to serve as a baseline.
+
+![Timings (Radix Sort)](plots/radix_timings_log_linear_gt_2pow18.png)
+
+Notice that just like our Efficient Scan implementation, the GPU Radix sort is much faster than the CPU version for sufficiently large sizes.
+
+![Timings (Radix Sort Full)](plots/radix_timings_loglog_full.png)
+
+The timings for both powers of two and NPOT are very similar.
 
 ## Implementation
 
@@ -122,7 +141,21 @@ The operation is memory-limited, which makes sense for a scan. The compute throu
 
 `static_kernel` has especially low compute - this might be happening because the static kernel is allocating temporary arrays while the Scan kernel performs the actual scan, but this is just a guess without looking at the code.
 
-#### Testing and Plotting
+### Radix Sort
+I implemented a stable LSD radix sort that uses scan to partition the array by one bit at a time (least‑significant to most‑significant). Each pass is a stable split into 0‑bucket then 1‑bucket, so after 32 passes (for `int`) the array is fully sorted.
+
+- Per‑bit flags: For bit `k`, I build `b1[i] = ((unsigned)idata[i] >> k) & 1` with `radix_to_bools`, and `b0[i] = 1 - b1[i]` via `negate_bools_into`.
+- Indices via scan: I exclusive‑scan `b1` and `b0` with my work‑efficient `Efficient::recursiveScan` to get write indices `idxOnes` and `idxZeros`.
+- Scatter (stable): I compute `totalOnes` from the last prefix element plus the last flag, then `totalZeros = m - totalOnes` (where `m` is the original length, not padded). `assign_indexes` writes zeros to `odata[idxZeros[i]]` and ones to `odata[idxOnes[i] + totalZeros]`, preserving original order within each bucket.
+- Ping‑pong buffers: I alternate `dev_bufA`/`dev_bufB` between passes so each pass reads from one and writes to the other.
+
+NPOT handling: I pad internal scan buffers up to the next power of two (`n = 1 << ilog2ceil(m)`) but keep all counts and scatters based on `m`. I also zero‑fill the tails of `b0`/`b1` when `n > m` so padding never contributes to totals. That keeps behavior identical for both power‑of‑two and NPOT sizes.
+
+Timing notes: Allocation and the initial H2D copy are outside the GPU timer; the timer wraps only the 32 per‑bit passes. Scans reuse the same recursive work‑efficient routine used in stream compaction, so accesses stay coalesced and use shared memory within blocks.
+
+Limitations/assumptions: Bit tests cast inputs to `unsigned` for correctness of shifts; my tests generate non‑negative data. If you need signed ascending order with negatives, you can post‑process or adjust the final pass to handle the sign bit specially.
+
+## Testing and Plotting
 
 The timings shown in this report are the exact times used by the CPU and GPU in calculating the scan. This does not include the times allocating memory for the scan function,copying memory between host and device etc. There are some nuances in `Efficient::scan` (`recursiveScan`) and `Thrust::scan` timings (discussed in more detail later), where intermediate arrays are allocated within the scan loop, so these are counted. But all other arrays like bools, indices etc. are preallocated and copied, and the output is copied to host after stopping the timers.
 
@@ -205,7 +238,38 @@ SIZE= 33554432
 5.72349
 5.43437
 ```
-I tried a for loop in c++ to get multiple such runs, but the code was running asynchronously and I was getting incorrect timings. I tried using `cudaDeviceSynchronize()` and/or `cudaDeviceReset()` between calls, but these didn't solve my timings issues.
+
+Radix Sort:
+```
+**********************
+** RADIX SORT TESTS **
+**********************
+    [ 18284 4031 17105 7014 14969 10298 28093 25039 9467 30141 2902 28383 25462 ... 19308   0 ]
+==== cpu sort, power-of-two ====
+   elapsed time: 1518.95ms    (std::chrono Measured)
+    [   0   0   0   0   0   0   0   0   0   0   0   0   0 ... 32767 32767 ]
+==== cpu sort, non-power-of-two ====
+   elapsed time: 1535.09ms    (std::chrono Measured)
+    [   0   0   0   0   0   0   0   0   0   0   0   0   0 ... 32767 32767 ]
+==== Radix Sort, power-of-two ====
+   elapsed time: 310.548ms    (CUDA Measured)
+    [   0   0   0   0   0   0   0   0   0   0   0   0   0 ... 32767 32767 ]
+passed
+==== Radix Sort, non-power-of-two ====
+   elapsed time: 5.69754ms    (CUDA Measured)
+    [   0   0   0   0   0   0   0   0   0   0   0   0   0 ... 32767 32767 ]
+passed
+```
+
+Testing Output:
+```
+SIZE= 33554432
+1516.88
+1507.03
+287.379
+303.782
+```
+I tried a for loop in C++ to get multiple such runs, but the code was running asynchronously and I was getting incorrect timings. I tried using `cudaDeviceSynchronize()` and/or `cudaDeviceReset()` between calls, but these didn't solve my timings issues.
 
 Since the number of runs weren't very large, I ended up running each input multiple times in Visual Studio and appending to a timings.txt using `iostream`.
 
